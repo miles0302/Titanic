@@ -1,11 +1,10 @@
-setwd('~/Dropbox/DataScience/KaggleCompetition/Titanic/')
-train <- read.csv('train.csv')
-test <- read.csv('test.csv')
-
 library(caret)
 library(rattle)
 library(rpart.plot)
 library(RColorBrewer)
+
+train <- read.csv('Titanic/train.csv')
+test <- read.csv('Titanic/test.csv')
 
 test$Survived <- NA
 
@@ -29,7 +28,7 @@ combi$FamilySize <- combi$SibSp + combi$Parch + 1
 
 # for (title in names(table(combi$Title)))
 # {
-#   combi$Age[is.na(combi$Age) & combi$Title == title] <- 
+#   combi$Age[is.na(combi$Age) & combi$Title == title] <-
 #     mean(combi$Age[combi$Title == title & is.na(combi$Age) == FALSE])
 # }
 

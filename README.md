@@ -1,4 +1,1 @@
-# Titanic
-Kaggle - Titanic
-
-My very initial machine learning project
+Kaggle Data Science Compitition
