@@ -1,0 +1,208 @@
+---
+title: "House Prices"
+date: "`r Sys.Date()`"
+author: "Wei Lin"
+output: 
+  html_notebook: 
+    toc: yes
+    highlight: pygments
+    theme: cosmo
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r, fig.width=5,fig.height=2,fig.align='center', include=FALSE}
+suppressPackageStartupMessages(library(InspireR))
+suppressPackageStartupMessages(library(DT))
+
+# Knitr Setting
+knitr::opts_chunk$set(echo=FALSE, cache=FALSE, prompt=FALSE,
+                      tidy=TRUE, comment="", message=FALSE, warning=FALSE)
+
+# datatable option set
+dt_options <- list(bInfo = F, searching = F, scrollX = T, paging = F)
+dt_class <- 'compact row-border nowrap stripe'
+```
+
+---
+
+```{r, include=FALSE}
+train  <- fread('train.csv')
+test <- fread('test.csv')
+
+sample_submission <- fread('sample_submission.csv')
+```
+
+### Dataset Overview
+
+Size of Training Data Set
+```{r}
+train %>% dim
+```
+
+Missing value in Training Data 
+```{r}
+train %>% cc
+```
+
+The ID variable is just the row number. We can simply remove it
+```{r}
+train[, Id := NULL]
+```
+
+### Dependent Variable Exploratory Analysis
+
+* Continuous: Histogram
+    * Skewness
+
+* Categorical: Bar plot
+    * Balanceness
+
+Histogram
+```{r, fig.width=5,fig.height=1}
+train %>% 
+  ggplot() + 
+  geom_histogram(aes(SalePrice), bins = 100)
+```
+
+We create a new variable as log of the SalePrice 
+```{r, fig.width=5,fig.height=1}
+train[, log_price := log(SalePrice)]
+train %>% 
+  ggplot() + 
+  geom_histogram(aes(log_price), bins = 100)
+```
+
+### Independent Variable Exploratory Analysis
+
+* Correlation between features and response
+
+The first thing
+```{r, fig.width=5,fig.height=1}
+train[, .(SalePrice, MSSubClass = factor(MSSubClass))] %>% 
+  ggplot() + 
+  geom_boxplot(aes(MSSubClass, SalePrice))
+```
+
+### Feature Engineering
+
+The basic idea is assigned numeric values for categorical values with clearly 
+```{r}
+human_levels <- c('Ex', 'Gd', 'TA', 'Fa', 'Po', 'NA')
+
+train <- 
+  train %>% 
+  mutate_at(.vars = vars(c(ExterQual, ExterCond, BsmtQual,
+                           BsmtCond, HeatingQC, KitchenQual, FireplaceQu,
+                           GarageQual, GarageCond, PoolQC)),
+            .funs = funs(factor(., levels = human_levels) %>% 
+                           as.integer())) %>% 
+  char2fac() %>% 
+  setDT()
+
+test <- 
+  test %>% 
+  mutate_at(.vars = vars(c(ExterQual, ExterCond, BsmtQual,
+                           BsmtCond, HeatingQC, KitchenQual, FireplaceQu,
+                           GarageQual, GarageCond, PoolQC)),
+            .funs = funs(factor(., levels = human_levels) %>% 
+                           as.integer())) %>% 
+  setDT()
+```
+
+
+
+### Model
+```{r, include=FALSE}
+h2o_start()
+h2o::h2o.no_progress()
+train_h2o <- 
+  train %>% 
+  copy() %>% 
+  .[, `:=`(MSSubClass = factor(MSSubClass),
+           SalePrice = NULL)] %>% 
+  h2o::as.h2o()
+```
+
+
+* Model 1: 95% Lasso Regression
+
+```{r}
+fit_lr <- h2o::h2o.glm(y = 'log_price', 
+                        training_frame = train_h2o,
+                        nfolds = 5, 
+                        alpha = 0.95, 
+                        lambda_search = TRUE,
+                        fold_assignment = "Modulo", 
+                        keep_cross_validation_predictions = TRUE,
+                        seed = 1, 
+                        model_id = 'LR')
+h2o::h2o.performance(fit_lr, xval = T)
+```
+
+```{r}
+fit_gbm <- h2o::h2o.gbm(y = 'log_price', 
+                          training_frame = train_h2o,
+                          nfolds = 5, 
+                          stopping_metric = 'RMSE', 
+                          stopping_rounds = 3, 
+                          fold_assignment = "Modulo", 
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 1, model_id = 'gbm')
+h2o::h2o.performance(fit_gbm, xval = T)
+```
+
+```{r}
+fit_rf <- h2o::h2o.randomForest(y = 'log_price', 
+                       training_frame = train_h2o,
+                       nfolds = 5, 
+                       stopping_metric = 'RMSE', 
+                       stopping_rounds = 3, 
+                       fold_assignment = "Modulo", 
+                       keep_cross_validation_predictions = TRUE,
+                       seed = 1, model_id = 'rf')
+h2o::h2o.performance(fit_rf, xval = T)
+```
+
+```{r}
+fit_ensemble <- h2o::h2o.stackedEnsemble(
+  y = 'log_price', 
+  training_frame = train_h2o,
+  base_models = list(fit_lr, fit_gbm, fit_rf),
+  metalearner_nfolds = 5, 
+  seed = 1, model_id = "ensemble")
+h2o::h2o.performance(fit_ensemble, xval = T)
+```
+
+Auto ML
+
+```{r}
+aml <- h2o::h2o.automl(y = 'log_price', 
+                       training_frame = train_h2o,
+                       seed = 1, stopping_metric = 'RMSE', stopping_rounds = 3,
+                       sort_metric = 'RMSE')
+# View the AutoML Leaderboard
+aml@leader@model$cross_validation_metrics
+```
+
+
+
+
+### Submission
+
+```{r}
+test_h2o <- test %>% copy() %>% 
+  .[, `:=`(MSSubClass = as.character(MSSubClass))] %>% 
+  h2o::as.h2o()
+
+# fit <- fit_ensemble
+fit <- aml@leader
+
+submission <- h2o::h2o.cbind(test_h2o, 
+                             h2o::h2o.predict(fit, test_h2o)) %>% 
+  as.data.table()
+
+submission <- submission[,.(Id, SalePrice = exp(predict))]
+fwrite(submission, 'submission.csv')
+```
