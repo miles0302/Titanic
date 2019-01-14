@@ -111,12 +111,9 @@ test <-
   setDT()
 ```
 
-
-
 ### Model
 ```{r, include=FALSE}
 h2o_start()
-h2o::h2o.no_progress()
 train_h2o <- 
   train %>% 
   copy() %>% 
@@ -179,7 +176,7 @@ Auto ML
 
 ```{r}
 aml <- h2o::h2o.automl(y = 'log_price', 
-                       training_frame = train_h2o,
+                       training_frame = train_h2o, max_models = 25,
                        seed = 1, stopping_metric = 'RMSE', stopping_rounds = 3,
                        sort_metric = 'RMSE')
 # View the AutoML Leaderboard
