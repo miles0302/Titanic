@@ -41,14 +41,9 @@ Size of Training Data Set
 train %>% dim
 ```
 
-Missing value in Training Data 
+Size of Test Data Set
 ```{r}
-train %>% cc
-```
-
-The ID variable is just the row number. We can simply remove it
-```{r}
-train[, Id := NULL]
+test %>% dim
 ```
 
 ### Dependent Variable Exploratory Analysis
@@ -66,33 +61,91 @@ train %>%
   geom_histogram(aes(SalePrice), bins = 100)
 ```
 
-We create a new variable as log of the SalePrice 
-```{r, fig.width=5,fig.height=1}
-train[, log_price := log(SalePrice)]
-train %>% 
-  ggplot() + 
-  geom_histogram(aes(log_price), bins = 100)
-```
-
-### Independent Variable Exploratory Analysis
-
-* Correlation between features and response
-
-The first thing
-```{r, fig.width=5,fig.height=1}
-train[, .(SalePrice, MSSubClass = factor(MSSubClass))] %>% 
-  ggplot() + 
-  geom_boxplot(aes(MSSubClass, SalePrice))
-```
-
 ### Feature Engineering
+
+We combine training and test set to do the imputation
+```{r}
+total <- rbind(train, test, fill = TRUE)
+```
+
+We create a new variable as log of the SalePrice 
+```{r}
+total[, log_price := log(SalePrice)]
+```
+
+The NA in PoolQC, MiscFeature, Alley, Fence, FireplaceQu,
+GarageType, GarageFinish, GarageQual, GarageCond, BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2, MSSubClass columns means "None"
+```{r}
+total <- 
+  total %>% 
+  mutate_at(.vars = vars(c(PoolQC, MiscFeature, Alley, Fence, FireplaceQu,
+                           GarageType, GarageFinish, GarageQual, GarageCond,
+                           BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, 
+                           BsmtFinType2, MasVnrType, MSSubClass)),
+            .funs = funs(ifelse(is.na(.), 'None', .))) %>% 
+  setDT()
+```
+
+The NA in Functional mean "Typ"
+```{r}
+total[is.na(Functional), Functional := 'Typ']
+```
+
+The NA in LotFrontage will be filled by median 
+```{r}
+total[, LotFrontage := as.numeric(LotFrontage)]
+total[, LotFrontage := coalesce(LotFrontage, median(LotFrontage, na.rm = T))]
+```
+
+The NA in GarageYrBlt, GarageArea, GarageCars, BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF, BsmtFullBath, BsmtHalfBath can be replaced by 0
+```{r}
+total <- 
+  total %>% 
+  mutate_at(.vars = vars(c(GarageYrBlt, GarageArea, GarageCars,
+                           BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF, 
+                           BsmtFullBath, BsmtHalfBath, MasVnrArea)),
+            .funs = funs(ifelse(is.na(.), 0, .))) %>% 
+  setDT()
+```
+
+The NA in MSZoning, KitchenQual, Exterior1st, Exterior2nd can be replaced 
+by the most common value
+```{r}
+total <- 
+  total %>% 
+  mutate_at(.vars = vars(c(MSZoning, KitchenQual, Exterior1st, Exterior2nd, 
+                           SaleType)),
+            .funs = funs(ifelse(is.na(.), 
+                                table(.) %>% sort() %>% tail(1) %>% names(), 
+                                .))) %>% 
+  setDT()
+```
+
+Features Utilities, Electrical are mostly constant. They are safe to be removed
+```{r}
+total[, `:=`(Utilities = NULL, Electrical = NULL)]
+```
+
+The ID variable is just the row number. We can simply remove it
+```{r}
+total[, Id := NULL]
+```
+
+Transform Some Currently Numerical Variable to Categorical
+```{r, fig.width=5,fig.height=1}
+total <- 
+  total %>% 
+  mutate_at(.vars = vars(c(MSSubClass, OverallCond, YrSold, MoSold)),
+            .funs = funs(as.character(.))) %>% 
+  setDT()
+```
 
 The basic idea is assigned numeric values for categorical values with clearly 
 ```{r}
-human_levels <- c('Ex', 'Gd', 'TA', 'Fa', 'Po', 'NA')
+human_levels <- c('Ex', 'Gd', 'TA', 'Fa', 'Po')
 
-train <- 
-  train %>% 
+total <- 
+  total %>% 
   mutate_at(.vars = vars(c(ExterQual, ExterCond, BsmtQual,
                            BsmtCond, HeatingQC, KitchenQual, FireplaceQu,
                            GarageQual, GarageCond, PoolQC)),
@@ -100,97 +153,41 @@ train <-
                            as.integer())) %>% 
   char2fac() %>% 
   setDT()
-
-test <- 
-  test %>% 
-  mutate_at(.vars = vars(c(ExterQual, ExterCond, BsmtQual,
-                           BsmtCond, HeatingQC, KitchenQual, FireplaceQu,
-                           GarageQual, GarageCond, PoolQC)),
-            .funs = funs(factor(., levels = human_levels) %>% 
-                           as.integer())) %>% 
-  setDT()
 ```
+
+Add Total Square footage feature
+```{r}
+total[, TotalSF := TotalBsmtSF + `1stFlrSF` + `2ndFlrSF`]
+```
+
+<!-- De-skewness -->
 
 ### Model
 ```{r, include=FALSE}
 h2o_start()
+# h2o::h2o.no_progress()
 train_h2o <- 
-  train %>% 
-  copy() %>% 
-  .[, `:=`(MSSubClass = factor(MSSubClass),
-           SalePrice = NULL)] %>% 
+  total[!is.na(SalePrice)] %>% 
+  .[, `:=`(SalePrice = NULL)] %>% 
   h2o::as.h2o()
 ```
 
-
-* Model 1: 95% Lasso Regression
-
-```{r}
-fit_lr <- h2o::h2o.glm(y = 'log_price', 
-                        training_frame = train_h2o,
-                        nfolds = 5, 
-                        alpha = 0.95, 
-                        lambda_search = TRUE,
-                        fold_assignment = "Modulo", 
-                        keep_cross_validation_predictions = TRUE,
-                        seed = 1, 
-                        model_id = 'LR')
-h2o::h2o.performance(fit_lr, xval = T)
-```
-
-```{r}
-fit_gbm <- h2o::h2o.gbm(y = 'log_price', 
-                          training_frame = train_h2o,
-                          nfolds = 5, 
-                          stopping_metric = 'RMSE', 
-                          stopping_rounds = 3, 
-                          fold_assignment = "Modulo", 
-                          keep_cross_validation_predictions = TRUE,
-                          seed = 1, model_id = 'gbm')
-h2o::h2o.performance(fit_gbm, xval = T)
-```
-
-```{r}
-fit_rf <- h2o::h2o.randomForest(y = 'log_price', 
-                       training_frame = train_h2o,
-                       nfolds = 5, 
-                       stopping_metric = 'RMSE', 
-                       stopping_rounds = 3, 
-                       fold_assignment = "Modulo", 
-                       keep_cross_validation_predictions = TRUE,
-                       seed = 1, model_id = 'rf')
-h2o::h2o.performance(fit_rf, xval = T)
-```
-
-```{r}
-fit_ensemble <- h2o::h2o.stackedEnsemble(
-  y = 'log_price', 
-  training_frame = train_h2o,
-  base_models = list(fit_lr, fit_gbm, fit_rf),
-  metalearner_nfolds = 5, 
-  seed = 1, model_id = "ensemble")
-h2o::h2o.performance(fit_ensemble, xval = T)
-```
-
-Auto ML
+Run Auto ML
 
 ```{r}
 aml <- h2o::h2o.automl(y = 'log_price', 
-                       training_frame = train_h2o, max_models = 25,
+                       training_frame = train_h2o,
                        seed = 1, stopping_metric = 'RMSE', stopping_rounds = 3,
                        sort_metric = 'RMSE')
 # View the AutoML Leaderboard
 aml@leader@model$cross_validation_metrics
 ```
 
-
-
-
 ### Submission
 
 ```{r}
-test_h2o <- test %>% copy() %>% 
-  .[, `:=`(MSSubClass = as.character(MSSubClass))] %>% 
+test_h2o <- 
+  total[is.na(SalePrice)] %>% 
   h2o::as.h2o()
 
 # fit <- fit_ensemble
