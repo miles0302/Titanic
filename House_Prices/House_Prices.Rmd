@@ -177,7 +177,8 @@ Run Auto ML
 ```{r}
 aml <- h2o::h2o.automl(y = 'log_price', 
                        training_frame = train_h2o,
-                       seed = 1, stopping_metric = 'RMSE', stopping_rounds = 3,
+                       seed = 1, stopping_metric = 'RMSE', 
+                       stopping_rounds = 3, max_models = 25,
                        sort_metric = 'RMSE')
 # View the AutoML Leaderboard
 aml@leader@model$cross_validation_metrics
@@ -196,6 +197,8 @@ fit <- aml@leader
 submission <- h2o::h2o.cbind(test_h2o, 
                              h2o::h2o.predict(fit, test_h2o)) %>% 
   as.data.table()
+
+submission$Id <- test$Id
 
 submission <- submission[,.(Id, SalePrice = exp(predict))]
 fwrite(submission, 'submission.csv')
